@@ -2,10 +2,10 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <string>
 #include <utility>
 #include <vector>
-#include <cstdio>
 
 TEST_CASE("strict JSON replaces non-finite numeric tokens", "[json]") {
 	const std::vector<std::pair<std::string, std::string>> cases {
@@ -38,28 +38,47 @@ TEST_CASE("JSON escaping emits portable Unicode and replacements", "[json]") {
 	CHECK(sqrail::JsonEscape("\xC0\xAF") == R"(\ufffd\ufffd)");
 }
 
-TEST_CASE("JSON escaping covers all ASCII control bytes 0x00-0x1F", "[json][escape]") {
-    CHECK(sqrail::JsonEscape(std::string(1, '\b')) == "\\b");
-    CHECK(sqrail::JsonEscape(std::string(1, '\t')) == "\\t");
-    CHECK(sqrail::JsonEscape(std::string(1, '\n')) == "\\n");
-    CHECK(sqrail::JsonEscape(std::string(1, '\f')) == "\\f");
-    CHECK(sqrail::JsonEscape(std::string(1, '\r')) == "\\r");
-    for (unsigned b = 0; b <= 0x1Fu; ++b) {
-        if (b == 0x08u || b == 0x09u || b == 0x0Au || b == 0x0Cu || b == 0x0Du) continue;
-        const std::string in(1, static_cast<char>(b));
-        const std::string out = sqrail::JsonEscape(in);
-        char expected[8];
-        std::snprintf(expected, sizeof(expected), "\\u%04x", b);
-        CHECK(out == expected);
-    }
+TEST_CASE("JSON escaping covers every ASCII control byte", "[json]") {
+	const std::vector<std::string> expected {
+	    R"(\u0000)", R"(\u0001)", R"(\u0002)", R"(\u0003)", R"(\u0004)", R"(\u0005)", R"(\u0006)", R"(\u0007)",
+	    R"(\b)",     R"(\t)",     R"(\n)",     R"(\u000b)", R"(\f)",     R"(\r)",     R"(\u000e)", R"(\u000f)",
+	    R"(\u0010)", R"(\u0011)", R"(\u0012)", R"(\u0013)", R"(\u0014)", R"(\u0015)", R"(\u0016)", R"(\u0017)",
+	    R"(\u0018)", R"(\u0019)", R"(\u001a)", R"(\u001b)", R"(\u001c)", R"(\u001d)", R"(\u001e)", R"(\u001f)",
+	};
+	REQUIRE(expected.size() == 0x20);
+
+	for (std::size_t byte = 0; byte < expected.size(); ++byte) {
+		CAPTURE(byte);
+		CHECK(sqrail::JsonEscape(std::string(1, static_cast<char>(byte))) == expected[byte]);
+	}
 }
 
-TEST_CASE("JSON escaping replaces truncated UTF-8 sequences with U+FFFD", "[json][escape][utf8]") {
-    using std::string;
-    CHECK(sqrail::JsonEscape(string(1, static_cast<char>(0x80))) == "\\ufffd");
-    CHECK(sqrail::JsonEscape(string(1, static_cast<char>(0xC2))) == "\\ufffd");
-    CHECK(sqrail::JsonEscape(string{static_cast<char>(0xE0), static_cast<char>(0xA0)}) == "\\ufffd");
-    CHECK(sqrail::JsonEscape(string{static_cast<char>(0xF0), static_cast<char>(0x9F), static_cast<char>(0x98)}) == "\\ufffd");
-    const auto out = sqrail::JsonEscape(string{static_cast<char>(0xC0), static_cast<char>(0x80)});
-    CHECK(out.find("\\ufffd") != std::string::npos);
+TEST_CASE("JSON escaping replaces each malformed UTF-8 byte with U+FFFD", "[json]") {
+	// A byte that does not begin a complete, valid sequence becomes U+FFFD and
+	// decoding resumes at the next byte, so a truncated sequence yields one
+	// replacement per byte.
+	const std::vector<std::pair<std::string, std::string>> cases {
+	    {"\x80", R"(\ufffd)"},
+	    {"\xBF", R"(\ufffd)"},
+	    {"\x80\xBF", R"(\ufffd\ufffd)"},
+	    {"\xC2", R"(\ufffd)"},
+	    {"\xDF", R"(\ufffd)"},
+	    {"\xE0\xA0", R"(\ufffd\ufffd)"},
+	    {"\xE2\x82", R"(\ufffd\ufffd)"},
+	    {"\xEF", R"(\ufffd)"},
+	    {"\xF0\x9F\x98", R"(\ufffd\ufffd\ufffd)"},
+	    {"\xF4\x8F", R"(\ufffd\ufffd)"},
+	    {"\xF1", R"(\ufffd)"},
+	    {"a\xC2z", R"(a\ufffdz)"},
+	    {"\xE2\x82Z", R"(\ufffd\ufffdZ)"},
+	    {"\xF0\x9F\x98\xC3\xA9", R"(\ufffd\ufffd\ufffd\u00e9)"},
+	};
+
+	for (std::size_t index = 0; index < cases.size(); ++index) {
+		const auto actual = sqrail::JsonEscape(cases[index].first);
+		CAPTURE(index, cases[index].second);
+		CHECK(actual == cases[index].second);
+		CHECK(std::all_of(actual.begin(), actual.end(),
+		                  [](const char character) { return character >= 0x20 && character < 0x7F; }));
+	}
 }
